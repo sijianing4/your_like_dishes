@@ -723,8 +723,6 @@
         <div class="card pad">
           <div class="title">AI 菜谱生成（本地模拟）</div>
           <div class="muted" style="margin-bottom:10px">
-            现在是离线可运行版本：根据食材 & 目标生成“推荐组合”。<br/>
-            你要接 OpenAI API 时，我已经在代码里留了接入位置。
           </div>
 
           <div class="field" style="margin-bottom:10px">
@@ -929,7 +927,7 @@
 // ========================
 // DeepSeek API 配置
 // ========================
-    const DEEPSEEK_API_KEY = "sk-629112030b484c268b94478a95be5c1e";
+    const DEEPSEEK_API_KEY = "sk-93381ea615124892b565249a14f246d1";
 
     const DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions";
      * 1) 数据与持久化
@@ -1075,7 +1073,8 @@ const result = await callDeepseek(prompt)
 
 try{
 
-const dish = JSON.parse(result)
+const clean = result.replace(/```json|```/g,"")
+const dish = JSON.parse(clean)
 
 dish.id = Date.now()
 dish.category = "ai"
@@ -1807,103 +1806,132 @@ alert("AI返回解析失败:\n"+result)
     /********************
      * 8) AI（离线模拟） + 预留OpenAI接入点
      ********************/
-    function aiGenerateLocal(){
-      const goal = $("aiGoal").value;
-      const ing = ($("aiIngredients").value||"").trim();
-      const out = $("aiResult");
+     /********************
+ * 8) AI（DeepSeek版本）
+ ********************/
 
-      if(!ing){
-        out.className = "empty";
-        out.textContent = "请先输入食材";
-        return;
-      }
 
-      // 简单离线策略：根据目标推荐“高蛋白/低脂”或“增肌更高热量”
-      const keywords = ing.split(/[,\s，]+/).filter(Boolean);
-      const pool = dishes.slice();
+async function callDeepseek(prompt){
 
-      let candidates = pool;
-      if(goal==="lose"){
-        candidates = pool.filter(d=>num(d.kcal)<=220).sort((a,b)=>num(b.protein)-num(a.protein));
-      }else if(goal==="gain"){
-        candidates = pool.filter(d=>num(d.protein)>=10).sort((a,b)=>num(b.kcal)-num(a.kcal));
-      }else{
-        candidates = pool.sort((a,b)=>Math.abs(num(a.kcal)-180)-Math.abs(num(b.kcal)-180));
-      }
+  const res = await fetch(DEEPSEEK_URL,{
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      "Authorization":"Bearer " + DEEPSEEK_API_KEY
+    },
+    body:JSON.stringify({
+      model:"deepseek-chat",
+      messages:[
+        {
+          role:"user",
+          content:prompt
+        }
+      ],
+      temperature:0.7
+    })
+  })
 
-      // 根据食材关键词做一点加权
-      function score(d){
-        let s = 0;
-        const text = (d.name+" "+(d.usage||"")).toLowerCase();
-        keywords.forEach(k=>{
-          if(text.includes(k.toLowerCase())) s += 3;
-        });
-        if(goal==="lose") s += (num(d.protein)*0.6) - (num(d.kcal)*0.01);
-        if(goal==="gain") s += (num(d.protein)*0.5) + (num(d.kcal)*0.01);
-        return s;
-      }
+  const data = await res.json()
 
-      candidates.sort((a,b)=>score(b)-score(a));
-      const top = candidates.slice(0,3);
+  return data.choices[0].message.content
+}
 
-      out.className = "";
-      out.innerHTML = `
-        <div class="title">推荐结果</div>
-        ${top.map(d=>`
-          <div class="dishRow" style="cursor:default" data-id="${d.id}">
-            <div class="thumb">
-              ${d.image ? `<img src="${escapeHtml(d.image)}" alt="">` : `<div>${d.icon||"🍽️"}</div>`}
-            </div>
-            <div class="rowInfo">
-              <div class="name">
-                <span>${escapeHtml(d.name)}</span>
-                <span class="pill">${catLabel(d.category)}</span>
-              </div>
-              <div class="meta">
-                <span class="pill brand">🔥 ${num(d.kcal)} kcal</span>
-                <span class="pill">🥩 ${num(d.protein)}g</span>
-                <span class="pill">🍚 ${num(d.carb)}g</span>
-              </div>
-              <div class="bottom">
-                <div class="kcal">${num(d.kcal)} kcal</div>
-                <div class="miniBtns">
-                  <button class="mini primary" data-act="detail">详情</button>
-                  <button class="mini" data-act="toLunch">加到午餐</button>
-                </div>
-              </div>
-            </div>
+
+async function aiGenerateDish(){
+
+  const ingredients = $("aiIngredients").value.trim()
+  const goal = $("aiGoal").value
+  const out = $("aiResult")
+
+  if(!ingredients){
+    out.className="empty"
+    out.textContent="请输入食材"
+    return
+  }
+
+  out.className="empty"
+  out.textContent="AI正在生成菜谱..."
+
+  const prompt = `
+请根据以下条件生成一道健康菜谱，并只返回JSON。
+
+目标:${goal}
+食材:${ingredients}
+
+JSON格式：
+
+{
+"name":"菜名",
+"kcal":200,
+"protein":20,
+"fat":5,
+"carb":15,
+"usage":"食材说明",
+"steps":"制作步骤"
+}
+`
+
+  try{
+
+    const result = await callDeepseek(prompt)
+
+    const dish = JSON.parse(result)
+
+    dish.id = Date.now()
+    dish.category = "custom"
+    dish.icon = "🤖"
+
+    dishes.unshift(dish)
+
+    saveState()
+    renderAll()
+
+    out.className=""
+    out.innerHTML = `
+      <div class="title">AI生成成功</div>
+
+      <div class="dishRow">
+        <div class="thumb">🤖</div>
+
+        <div class="rowInfo">
+
+          <div class="name">
+            ${dish.name}
+            <span class="pill">AI生成</span>
           </div>
-        `).join("")}
 
-        <div class="hr"></div>
-        <div class="muted">
-          ✅ 这是离线版本的“推荐”。如果你要真正 AI 生成新菜谱：<br/>
-          你只要把下面的函数替换为调用 OpenAI API 的 fetch，就能输出结构化菜谱并保存到 dishes。
+          <div class="meta">
+            <span class="pill brand">🔥 ${dish.kcal} kcal</span>
+            <span class="pill">🥩 ${dish.protein}g</span>
+            <span class="pill">🥑 ${dish.fat}g</span>
+            <span class="pill">🍚 ${dish.carb}g</span>
+          </div>
+
+          <div class="muted" style="margin-top:6px">
+            ${dish.usage}
+          </div>
+
+          <div class="muted" style="margin-top:6px">
+            ${dish.steps}
+          </div>
+
         </div>
-        <pre style="background:#0f1320;color:#c7d2fe;padding:12px;border-radius:14px;overflow:auto;font-size:12px;margin-top:10px;white-space:pre-wrap;">
-// TODO: OpenAI API 接入位置（示意）
-// async function aiGenerateWithOpenAI(ingredients, goal){
-//   const res = await fetch(\"/your_api\", { method:\"POST\", body: JSON.stringify({ingredients, goal}) });
-//   const recipe = await res.json(); // {name,kcal,protein,fat,carb,usage,steps,imageUrl}
-//   dishes.unshift({ id: uniqueId(), category:\"custom\", icon:\"🍽️\", ...recipe });
-//   saveState(); renderAll();
-// }
-        </pre>
-      `;
+      </div>
+    `
 
-      out.querySelectorAll(".dishRow").forEach(row=>{
-        const id = Number(row.dataset.id);
-        row.querySelector('[data-act="detail"]').addEventListener("click", ()=>openDetail(id));
-        row.querySelector('[data-act="toLunch"]').addEventListener("click", ()=>{
-          addToToday("lunch", id);
-          toast("已加入午餐");
-        });
-      });
-    }
+  }catch(e){
 
-    $("btnAiGen").addEventListener("click", aiGenerateLocal);
+    out.className="empty"
+    out.textContent="AI生成失败"
 
-    /********************
+    console.log(e)
+
+  }
+
+}
+
+$("btnAiGen").addEventListener("click", aiGenerateDish)
+   /********************
      * 9) 我的：导入导出/重置
      ********************/
     function renderMe(){
